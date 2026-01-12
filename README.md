@@ -19,30 +19,42 @@
 - 供电：电池或稳定电源（按电机/驱动额定电压配置）
 - 调试/烧录：ST-Link / J-Link
 
-## 建议引脚表（示例）
-> 注：以下引脚为建议映射，请根据实际最小系统板与 PCB 引脚资源、以及工程中 `Core/Inc/main.h` 的配置做对应修改。
+## 引脚映射（与 `Core/Inc/main.h` 对齐）
+> 下面列出的引脚来自 `Core/Inc/main.h` 中的 `*_Pin` 定义，已与工程代码保持一致。PWM 输出、编码器定时器/通道与 K210 串口需要在代码中确认并映射到合适的引脚/通道。
 
-| 功能 | 建议 STM32 引脚 | 说明 |
+| 功能 | STM32 引脚（代码定义） | 说明 |
 |---|---:|---|
-| 左轮编码器 A | TIM2_CH1 — PA0 | 定时器输入捕获（增量编码器） |
-| 左轮编码器 B | TIM2_CH2 — PA1 | 定时器输入捕获 |
-| 右轮编码器 A | TIM3_CH1 — PA6 | 定时器输入捕获 |
-| 右轮编码器 B | TIM3_CH2 — PA7 | 定时器输入捕获 |
-| 电机1 PWM | TIM4_CH1 — PB6 | PWM 输出给 TB6612 PWMA|
-| 电机1 DIR | PB0 | AIN1/AIN2 方向控制 |
-| 电机2 PWM | TIM4_CH2 — PB7 | PWM 输出 |
-| 电机2 DIR | PB1 | 方向控制 |
-| 电机3 PWM | TIM4_CH3 — PB8 | PWM 输出 |
-| 电机3 DIR | PB2 | 方向控制 |
-| 电机4 PWM | TIM4_CH4 — PB9 | PWM 输出 |
-| 电机4 DIR | PB3 | 方向控制 |
-| K210 串口（UART）TX | USART2_TX — PA2 | K210 接收主控数据/命令 |
-| K210 串口（UART）RX | USART2_RX — PA3 | K210 发送识别结果 |
-| SWDIO | PA13 | SWD 调试线 |
-| SWCLK | PA14 | SWD 时钟 |
-| NRST | NRST 引脚 | 外部复位（可选） |
+| TB6612 STBY | PB15 (`STBY_Pin`) | 驱动使能/待机控制 |
+| AIN1 | PC7 (`AIN1_Pin`) | TB6612 A 通道 1 方向控制 |
+| AIN2 | PC6 (`AIN2_Pin`) | TB6612 A 通道 2 方向控制 |
+| BIN1 | PD7 (`BIN1_Pin`) | TB6612 B 通道 1 方向控制 |
+| BIN2 | PD6 (`BIN2_Pin`) | TB6612 B 通道 2 方向控制 |
+| CIN1 | PC10 (`CIN1_Pin`) | TB6612 C 通道 1 方向控制 |
+| CIN2 | PG15 (`CIN2_Pin`) | TB6612 C 通道 2 方向控制 |
+| DIN1 | PD2 (`DIN1_Pin`) | TB6612 D 通道 1 方向控制 |
+| DIN2 | PC11 (`DIN2_Pin`) | TB6612 D 通道 2 方向控制 |
 
-如果你的编码器或电机数量较少，可只使用前两对 PWM/方向。实际在代码中使用的定时器/通道需与 `Core/Src` 中的配置一致。
+注意：
+- `main.h` 中目前定义的是各通道的方向控制与 STBY 引脚（见上表）。实际的 PWM 输出与 UART 在 `Core/Src` 中初始化：
+
+- PWM 输出（来自 `Core/Src/stm32f4xx_hal_msp.c` 与 `Core/Src/main.c`，使用 `TIM3`）：
+
+  - `TIM3_CH1` -> PA6 （对应工程中第 1 路 PWM）
+  - `TIM3_CH2` -> PA7 （对应工程中第 2 路 PWM）
+  - `TIM3_CH3` -> PB0 （对应工程中第 3 路 PWM）
+  - `TIM3_CH4` -> PB1 （对应工程中第 4 路 PWM）
+
+- 串口（K210 通信）在工程中使用 `USART3`，映射为：
+
+  - `USART3_TX` -> PB10
+  - `USART3_RX` -> PB11
+
+- 编码器（增量 A/B 信号）在当前代码中尚未看到定时器输入捕获或 `HAL_TIM_Encoder` 的初始化，因此编码器引脚尚未在工程中定义。建议将编码器 A/B 信号接到支持外部中断或定时器输入捕获的引脚，然后在代码中配置对应的 `TIMx` 为编码器接口（`HAL_TIM_Encoder_Init`）。
+
+如果你确认编码器使用的定时器/引脚，我可以把它们写入 `Core/Inc/main.h` 并同步到 `README.md`。
+
+如果你愿意，我可以继续：
+- 读取 `Core/Src` 中的定时器初始化代码来找出 PWM 与编码器的实际引脚映射，并把它们写进 README.md，或者直接把代码常量同步到 `Core/Inc/main.h`（视你希望的改动范围）。
 
 ## 电源与接线注意
 - 电机驱动（TB6612）的电源应单独供电，确保电机电源与 STM32 共地。
