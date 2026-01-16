@@ -21,7 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "motor.h"
+#include "qr_comm.h"
+#include "localization.h"
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,6 +72,103 @@ static void MX_TIM3_Init(void);
   * @brief  The application entry point.
   * @retval int
   */
+int main(void)
+{
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_USART3_UART_Init();
+  MX_TIM3_Init();
+
+  /* USER CODE BEGIN 2 */
+  
+  /* 初始化各个模块 */
+  Motor_Init();
+  QR_Comm_Init();
+  QR_Comm_Start_Receive();
+  Localization_Init();
+  
+  /* DEBUG: 通过UART3发送初始化消息 */
+  const char *init_msg = "System initialized\r\n";
+  HAL_UART_Transmit(&huart3, (uint8_t *)init_msg, strlen(init_msg), 100);
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  
+  /* 主控制循环参数 */
+  #define CONTROL_PERIOD_MS  20  /* 50Hz控制频率 */
+  uint32_t last_control_time = 0;
+  
+  bool navigation_active = false;
+  
+  while (1)
+  {
+    uint32_t current_time = HAL_GetTick();
+    
+    /* 执行50Hz控制循环 */
+    if (current_time - last_control_time >= CONTROL_PERIOD_MS) {
+        last_control_time = current_time;
+        
+        /* ========== 第一步：接收并处理二维码数据 ========== */
+        QR_Data_t qr_data;
+        if (QR_Comm_Process(&qr_data)) {
+            /* 成功接收二维码数据，更新位置 */
+            Update_Position_From_QR(&qr_data);
+            
+            /* DEBUG: 打印接收到的数据 */
+            char debug_msg[128];
+            snprintf(debug_msg, sizeof(debug_msg), 
+                    "QR: %s @ (%.1f, %.1f)\r\n", 
+                    qr_data.id, qr_data.world_x, qr_data.world_y);
+            HAL_UART_Transmit(&huart3, (uint8_t *)debug_msg, strlen(debug_msg), 10);
+        }
+        
+        /* ========== 第二步：导航控制 ========== */
+        if (navigation_active) {
+            if (Navigate_Update()) {
+                /* 已到达目标 */
+                navigation_active = false;
+                Motor_Stop_All();
+                const char *arrived_msg = "Target reached\r\n";
+                HAL_UART_Transmit(&huart3, (uint8_t *)arrived_msg, strlen(arrived_msg), 10);
+            }
+        }
+        
+        /* 示例：自动导航到目标点(300, 300)
+         * 取消下面的注释来启用自动导航
+         */
+        // if (!navigation_active && current_time % 5000 == 0) {
+        //     Set_Navigation_Target(300.0f, 300.0f, 10.0f);
+        //     navigation_active = true;
+        // }
+    }
+    
+    /* 其他后台任务可以在这里添加 */
+    
+    /* USER CODE END WHILE */
+  }
+
+  /* USER CODE BEGIN 3 */
+  /* USER CODE END 3 */
+}
 
 /**
   * @brief System Clock Configuration

@@ -51,11 +51,6 @@
 
 - 编码器（增量 A/B 信号）在当前代码中尚未看到定时器输入捕获或 `HAL_TIM_Encoder` 的初始化，因此编码器引脚尚未在工程中定义。建议将编码器 A/B 信号接到支持外部中断或定时器输入捕获的引脚，然后在代码中配置对应的 `TIMx` 为编码器接口（`HAL_TIM_Encoder_Init`）。
 
-如果你确认编码器使用的定时器/引脚，我可以把它们写入 `Core/Inc/main.h` 并同步到 `README.md`。
-
-如果你愿意，我可以继续：
-- 读取 `Core/Src` 中的定时器初始化代码来找出 PWM 与编码器的实际引脚映射，并把它们写进 README.md，或者直接把代码常量同步到 `Core/Inc/main.h`（视你希望的改动范围）。
-
 ## 电源与接线注意
 - 电机驱动（TB6612）的电源应单独供电，确保电机电源与 STM32 共地。
 - K210 与摄像头供电应按模块规格供电（通常 3.3V 或 5V，视模块而定）。
@@ -66,6 +61,56 @@
 - K210 脚本：位于 [K210/QRRecognize.py](K210/QRRecognize.py)。
 - 驱动与第三方库：`Drivers/STM32F4xx_HAL_Driver`。
 - 构建输出：`build/`。
+- **使用说明文档**：[QR_SYSTEM_USAGE.md](QR_SYSTEM_USAGE.md)（详细的功能说明和API文档）
+
+## 系统功能
+
+### 已实现功能
+✅ **完整的电机控制系统**
+- TB6612 四路电机驱动初始化与控制
+- 单个电机速度与方向控制（-999 到 999）
+- 麦克纳姆轮全向移动控制（vx, vy, omega）
+
+✅ **二维码识别与数据处理**
+- K210 串口通信（USART3，115200 波特率，DMA接收）
+- 二维码数据包解析（ID、世界坐标、四角点像素坐标）
+- 数据有效性验证
+
+✅ **定位与导航系统**
+- 基于二维码的位置更新（简化PnP算法）
+- 机器人位姿估计（x, y, theta）
+- 自动导航到目标点（PD控制器）
+- 到达检测与自动停止
+
+✅ **实时控制循环**
+- 50Hz 主控制频率
+- 异步串口数据接收（UART空闲中断 + DMA）
+- 状态管理与导航使能控制
+
+### K210 数据格式
+```
+$QR_ID,world_x,world_y|corner1_x,corner1_y|corner2_x,corner2_y|corner3_x,corner3_y|corner4_x,corner4_y
+```
+
+示例：`$QR01,150.5,200.3|120,80|180,80|180,140|120,140`
+
+### 主要 API 函数
+```c
+// 电机控制
+void Motor_Init(void);                              // 初始化电机
+void Motor_SetSpeed(uint8_t motor_id, int16_t speed);  // 设置单个电机速度
+void Motor_Stop_All(void);                          // 停止所有电机
+void Mecanum_Move(float vx, float vy, float omega); // 麦轮全向移动
+
+// 定位与导航
+void Process_QR_Data(uint8_t *data);                // 解析二维码数据
+void Update_Position_From_QR(QR_Data_t *qr);        // 更新位置
+void Set_Navigation_Target(float x, float y);       // 设置导航目标
+void Navigate_To_Target(float tx, float ty);        // 导航控制
+void Stop_Navigation(void);                         // 停止导航
+```
+
+详细使用说明请参考 **[QR_SYSTEM_USAGE.md](QR_SYSTEM_USAGE.md)**。
 
 ## macOS 开发环境（VSCode + EIDE + OpenOCD + gcc-arm）
 1. 安装 Homebrew（若未安装）：
@@ -127,5 +172,3 @@ st-flash write build/your_firmware.bin 0x08000000
 - 感谢 STM32 HAL 库与 K210 社区的开源支持。
 
 ---
-
-如果你希望我把上表中的引脚与 `Core/Inc/main.h` 中的实际定义对齐，我可以读取并同步两者（需要我检查该文件并做改动的话请确认）。

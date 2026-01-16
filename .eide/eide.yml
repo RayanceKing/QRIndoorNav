@@ -16,7 +16,8 @@ targets:
   Debug:
     cppPreprocessAttrs:
       defineList: []
-      incList: []
+      incList:
+        - .
       libList: []
     excludeList: []
     toolchain: GCC
