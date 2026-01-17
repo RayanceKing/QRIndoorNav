@@ -69,18 +69,18 @@ static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
     memcpy(tmp, data, length);
     tmp[length] = '\0';
 
-    /* 先尝试使用 sscanf 快速解析完整格式（健壮性更好） */
+    /* 先尝试使用 sscanf 快速解析完整格式（世界坐标以整数发送，例如：QR01,150,200） */
     char id[16] = {0};
-    float world_x = 0.0f, world_y = 0.0f;
+    int world_x_i = 0, world_y_i = 0;
     int cx[4], cy[4];
-    int parsed = sscanf(tmp + 1, "%15[^,],%f,%f|%d,%d|%d,%d|%d,%d|%d,%d", id, &world_x, &world_y,
+    int parsed = sscanf(tmp + 1, "%15[^,],%d,%d|%d,%d|%d,%d|%d,%d|%d,%d", id, &world_x_i, &world_y_i,
                         &cx[0], &cy[0], &cx[1], &cy[1], &cx[2], &cy[2], &cx[3], &cy[3]);
 
     if (parsed == 11) {
-        /* 全部解析成功 */
+        /* 全部解析成功（将整数坐标赋值为浮点字段以兼容定位模块） */
         strcpy(qr->id, id);
-        qr->world_x = world_x;
-        qr->world_y = world_y;
+        qr->world_x = (float)world_x_i;
+        qr->world_y = (float)world_y_i;
         for (int i = 0; i < 4; i++) {
             qr->corner_x[i] = (uint16_t)cx[i];
             qr->corner_y[i] = (uint16_t)cy[i];
@@ -99,13 +99,13 @@ static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
     id[i] = '\0';
     if (*p != ',') return false; p++;
 
-    /* world_x */
-    world_x = strtof(p, &endptr);
+    /* world_x（作为整数发送） */
+    long wx = strtol(p, &endptr, 10);
     if (endptr == p) return false; p = endptr;
     if (*p != ',') return false; p++;
 
-    /* world_y */
-    world_y = strtof(p, &endptr);
+    /* world_y（作为整数发送） */
+    long wy = strtol(p, &endptr, 10);
     if (endptr == p) return false; p = endptr;
     if (*p != '|') return false; p++;
 
@@ -129,8 +129,8 @@ static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
     }
 
     strcpy(qr->id, id);
-    qr->world_x = world_x;
-    qr->world_y = world_y;
+    qr->world_x = (float)wx;
+    qr->world_y = (float)wy;
     for (i = 0; i < 4; i++) {
         qr->corner_x[i] = corners_x[i];
         qr->corner_y[i] = corners_y[i];

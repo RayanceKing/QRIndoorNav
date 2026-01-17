@@ -96,8 +96,8 @@ while(True):
             # D. 发送数据到 STM32（控制发送频率）
             if time.ticks_diff(current_time, last_send_time) >= send_interval:
                 # 构建数据包：$ID,world_x,world_y|u0,v0|u1,v1|u2,v2|u3,v3\n
-                msg = "$%s,%.1f,%.1f|%d,%d|%d,%d|%d,%d|%d,%d\n" % (
-                    qr_id, world_x, world_y,
+                msg = "$%s,%d,%d|%d,%d|%d,%d|%d,%d|%d,%d\n" % (
+                    qr_id, int(world_x), int(world_y),
                     int(corners[0][0]), int(corners[0][1]),
                     int(corners[1][0]), int(corners[1][1]),
                     int(corners[2][0]), int(corners[2][1]),
