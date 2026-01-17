@@ -6,8 +6,10 @@
 #include "motor.h"
 #include "stm32f4xx_hal.h"
 #include <math.h>
+#include <stdio.h>
 
 extern TIM_HandleTypeDef htim3;
+extern UART_HandleTypeDef huart3; /* 用于可选的串口调试输出 */
 
 /* 电机引脚映射表 */
 static const MotorPins_t motor_pins[4] = {
@@ -80,6 +82,17 @@ void Motor_SetSpeed(uint8_t motor_id, int16_t speed)
     
     /* 设置PWM占空比 */
     __HAL_TIM_SET_COMPARE(&htim3, pwm_channels[motor_id], speed);
+
+#ifdef MOTOR_DEBUG_UART
+    /* 发送调试信息到串口，便于验证物理引脚输出 */
+    char dbg[64];
+    int in1 = (HAL_GPIO_ReadPin(pins->in1_port, pins->in1_pin) == GPIO_PIN_SET) ? 1 : 0;
+    int in2 = (HAL_GPIO_ReadPin(pins->in2_port, pins->in2_pin) == GPIO_PIN_SET) ? 1 : 0;
+    int len = snprintf(dbg, sizeof(dbg), "M%d IN1=%d IN2=%d PWM=%d\r\n", motor_id, in1, in2, speed);
+    if (len > 0) {
+        HAL_UART_Transmit(&huart3, (uint8_t *)dbg, (uint16_t)len, 5);
+    }
+#endif
 }
 
 /**

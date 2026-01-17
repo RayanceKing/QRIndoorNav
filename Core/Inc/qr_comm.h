@@ -31,6 +31,21 @@ typedef struct {
 } UART_Buffer_t;
 
 /**
+ * @brief K210 连接状态
+ */
+bool QR_Comm_Is_K210_Ready(void);
+
+/**
+ * @brief 上次心跳的时间戳（ms）
+ */
+uint32_t QR_Comm_Last_Heartbeat_Tick(void);
+
+/**
+ * @brief 链路是否在指定超时时间内保持心跳
+ */
+bool QR_Comm_Link_Alive(uint32_t timeout_ms);
+
+/**
  * @brief 初始化UART通信
  */
 void QR_Comm_Init(void);

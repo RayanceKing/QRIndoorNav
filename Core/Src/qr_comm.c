@@ -15,9 +15,20 @@ extern DMA_HandleTypeDef hdma_usart3_rx;
 static UART_Buffer_t uart_buffer = {0};
 static QR_Data_t latest_qr_data = {0};
 static bool new_data_flag = false;
+static bool k210_ready = false;
+static uint32_t last_heartbeat_tick = 0;
 
 #define RX_BUFFER_SIZE 256
 static uint8_t rx_dma_buffer[RX_BUFFER_SIZE];
+
+static void QR_Send_ACK(const char *tag)
+{
+    char ack[32];
+    int len = snprintf(ack, sizeof(ack), "$ACK,%s\r\n", tag);
+    if (len > 0) {
+        HAL_UART_Transmit(&huart3, (uint8_t *)ack, (uint16_t)len, 10);
+    }
+}
 
 /**
  * @brief 初始化UART通信
@@ -26,6 +37,8 @@ void QR_Comm_Init(void)
 {
     memset(&uart_buffer, 0, sizeof(UART_Buffer_t));
     memset(&latest_qr_data, 0, sizeof(QR_Data_t));
+    k210_ready = false;
+    last_heartbeat_tick = 0;
 }
 
 /**
@@ -46,47 +59,75 @@ void QR_Comm_Start_Receive(void)
  */
 static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
 {
-    if (length < 20 || data[0] != '$') {
+    if (length < 4 || data[0] != '$') {
         return false;
     }
-    
-    /* 跳过 $ */
-    const char *p = (const char *)data + 1;
-    const char *end = (const char *)data + length;
-    
-    /* 1. 解析ID */
+
+    /* 复制为可终止的字符串以便安全解析 */
+    char tmp[RX_BUFFER_SIZE];
+    if (length >= RX_BUFFER_SIZE) return false;
+    memcpy(tmp, data, length);
+    tmp[length] = '\0';
+
+    /* 先尝试使用 sscanf 快速解析完整格式（健壮性更好） */
     char id[16] = {0};
+    float world_x = 0.0f, world_y = 0.0f;
+    int cx[4], cy[4];
+    int parsed = sscanf(tmp + 1, "%15[^,],%f,%f|%d,%d|%d,%d|%d,%d|%d,%d", id, &world_x, &world_y,
+                        &cx[0], &cy[0], &cx[1], &cy[1], &cx[2], &cy[2], &cx[3], &cy[3]);
+
+    if (parsed == 11) {
+        /* 全部解析成功 */
+        strcpy(qr->id, id);
+        qr->world_x = world_x;
+        qr->world_y = world_y;
+        for (int i = 0; i < 4; i++) {
+            qr->corner_x[i] = (uint16_t)cx[i];
+            qr->corner_y[i] = (uint16_t)cy[i];
+        }
+        qr->timestamp = HAL_GetTick();
+        return true;
+    }
+
+    /* 若 sscanf 失败，退回到逐字段解析以便更灵活地容错 */
+    const char *p = tmp + 1; /* 跳过 $ */
+    char *endptr = NULL;
+
+    /* ID */
     int i = 0;
-    while (p < end && *p != ',' && i < 15) {
-        id[i++] = *p++;
-    }
-    id[i] = 0;
-    
-    if (p >= end || *p != ',') return false;
-    p++;  /* 跳过 , */
-    
-    /* 2. 解析world_x, world_y */
-    float world_x = strtof(p, (char **)&p);
-    if (*p != ',') return false;
-    p++;
-    
-    float world_y = strtof(p, (char **)&p);
-    if (*p != '|') return false;
-    p++;
-    
-    /* 3. 解析4个角点坐标 */
-    uint16_t corners_x[4], corners_y[4];
+    while (*p && *p != ',' && i < 15) id[i++] = *p++;
+    id[i] = '\0';
+    if (*p != ',') return false; p++;
+
+    /* world_x */
+    world_x = strtof(p, &endptr);
+    if (endptr == p) return false; p = endptr;
+    if (*p != ',') return false; p++;
+
+    /* world_y */
+    world_y = strtof(p, &endptr);
+    if (endptr == p) return false; p = endptr;
+    if (*p != '|') return false; p++;
+
+    /* corners */
+    uint16_t corners_x[4] = {0}, corners_y[4] = {0};
     for (i = 0; i < 4; i++) {
-        corners_x[i] = strtol(p, (char **)&p, 10);
-        if (*p != ',') return false;
-        p++;
-        
-        corners_y[i] = strtol(p, (char **)&p, 10);
-        if (i < 3 && *p != '|') return false;
-        if (i < 3) p++;
+        long tx = strtol(p, &endptr, 10);
+        if (endptr == p) return false;
+        corners_x[i] = (uint16_t)tx;
+        p = endptr;
+        if (*p != ',') return false; p++;
+
+        long ty = strtol(p, &endptr, 10);
+        if (endptr == p) return false;
+        corners_y[i] = (uint16_t)ty;
+        p = endptr;
+        if (i < 3) {
+            if (*p != '|') return false;
+            p++;
+        }
     }
-    
-    /* 保存解析结果 */
+
     strcpy(qr->id, id);
     qr->world_x = world_x;
     qr->world_y = world_y;
@@ -95,7 +136,7 @@ static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
         qr->corner_y[i] = corners_y[i];
     }
     qr->timestamp = HAL_GetTick();
-    
+
     return true;
 }
 
@@ -128,14 +169,40 @@ bool QR_Comm_Process(QR_Data_t *qr_data)
     }
     
     uint16_t packet_len = end - start + 1;
-    
-    if (QR_Parse_Data(start, packet_len, qr_data)) {
-        /* 保存最新数据 */
-        memcpy(&latest_qr_data, qr_data, sizeof(QR_Data_t));
-        new_data_flag = true;
-        uart_buffer.data_ready = false;
-        return true;
-    }
+        char packet[RX_BUFFER_SIZE] = {0};
+        uint16_t copy_len = packet_len < (RX_BUFFER_SIZE - 1) ? packet_len : (RX_BUFFER_SIZE - 1);
+        memcpy(packet, start, copy_len);
+        packet[copy_len] = '\0';
+
+        /* 去除调试输出：仅保留解析与回复行为 */
+
+        /* 处理心跳与初始化消息 */
+        if (strncmp(packet, "$HEARTBEAT", 10) == 0) {
+            last_heartbeat_tick = HAL_GetTick();
+            uart_buffer.data_ready = false;
+            QR_Send_ACK("HB");
+            return false;
+        }
+
+        if (strncmp(packet, "$INIT", 5) == 0) {
+            k210_ready = true;
+            last_heartbeat_tick = HAL_GetTick();
+            uart_buffer.data_ready = false;
+            QR_Send_ACK("INIT");
+            return false;
+        }
+
+        /* 正常二维码数据 */
+        if (QR_Parse_Data((uint8_t *)packet, packet_len, qr_data)) {
+            /* 解析成功，保存并回复 ACK（不打印调试信息） */
+            /* 保存最新数据 */
+            memcpy(&latest_qr_data, qr_data, sizeof(QR_Data_t));
+            new_data_flag = true;
+            last_heartbeat_tick = HAL_GetTick();
+            QR_Send_ACK("QR");
+            uart_buffer.data_ready = false;
+            return true;
+        }
     
     uart_buffer.data_ready = false;
     return false;
@@ -159,6 +226,24 @@ QR_Data_t* QR_Comm_Get_Latest(void)
 bool QR_Comm_Has_New_Data(void)
 {
     return new_data_flag;
+}
+
+bool QR_Comm_Is_K210_Ready(void)
+{
+    return k210_ready;
+}
+
+uint32_t QR_Comm_Last_Heartbeat_Tick(void)
+{
+    return last_heartbeat_tick;
+}
+
+bool QR_Comm_Link_Alive(uint32_t timeout_ms)
+{
+    if (last_heartbeat_tick == 0) {
+        return false;
+    }
+    return (HAL_GetTick() - last_heartbeat_tick) <= timeout_ms;
 }
 
 /**

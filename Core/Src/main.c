@@ -118,6 +118,9 @@ int main(void)
   uint32_t last_control_time = 0;
   
   bool navigation_active = false;
+    bool k210_ready_logged = false;
+    bool link_lost = true;
+    uint32_t last_link_warn = 0;
   
   while (1)
   {
@@ -127,6 +130,30 @@ int main(void)
     if (current_time - last_control_time >= CONTROL_PERIOD_MS) {
         last_control_time = current_time;
         
+      /* 链路健康监测和事件回应 */
+      if (QR_Comm_Is_K210_Ready() && !k210_ready_logged) {
+        const char *ready_msg = "K210 ready\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)ready_msg, strlen(ready_msg), 10);
+        k210_ready_logged = true;
+      }
+
+      if (QR_Comm_Link_Alive(3000U)) {
+        if (link_lost) {
+          const char *restore_msg = "Link restored\r\n";
+          HAL_UART_Transmit(&huart3, (uint8_t *)restore_msg, strlen(restore_msg), 10);
+          link_lost = false;
+        }
+      } else {
+        if (!link_lost && (current_time - last_link_warn >= 1000U)) {
+          const char *lost_msg = "Link lost, stop\r\n";
+          HAL_UART_Transmit(&huart3, (uint8_t *)lost_msg, strlen(lost_msg), 10);
+          Motor_Stop_All();
+          navigation_active = false;
+          link_lost = true;
+          last_link_warn = current_time;
+        }
+      }
+
         /* ========== 第一步：接收并处理二维码数据 ========== */
         QR_Data_t qr_data;
         if (QR_Comm_Process(&qr_data)) {
