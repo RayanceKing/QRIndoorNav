@@ -7,6 +7,7 @@
 #include "motor.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 static RobotPose_t robot_pose = {0.0f, 0.0f, 0.0f, 0};
 static NavigationTarget_t nav_target = {0};
@@ -137,6 +138,16 @@ bool Navigate_Update(void)
     float distance, angle_error;
     Calculate_Navigation_Error(&distance, &angle_error);
     
+    /* DEBUG: 打印导航状态 */
+    extern UART_HandleTypeDef huart3;
+    char nav_debug[256];
+    snprintf(nav_debug, sizeof(nav_debug),
+             "NAV: pos(%.1f,%.1f) target(%.1f,%.1f) dist=%.1f angle=%.2f\r\n",
+             robot_pose.x, robot_pose.y,
+             nav_target.target_x, nav_target.target_y,
+             distance, angle_error);
+    HAL_UART_Transmit(&huart3, (uint8_t *)nav_debug, strlen(nav_debug), 10);
+    
     /* 检查是否到达 */
     if (distance < nav_target.tolerance) {
         Motor_Stop_All();
@@ -159,6 +170,12 @@ bool Navigate_Update(void)
     
     if (angular_control > 300.0f) angular_control = 300.0f;
     if (angular_control < -300.0f) angular_control = -300.0f;
+    
+    /* DEBUG: 打印控制信号 */
+    snprintf(nav_debug, sizeof(nav_debug),
+             "CTRL: linear=%.1f angular=%.1f\r\n",
+             linear_control, angular_control);
+    HAL_UART_Transmit(&huart3, (uint8_t *)nav_debug, strlen(nav_debug), 10);
     
     /* 保存误差用于微分 */
     last_linear_error = distance;

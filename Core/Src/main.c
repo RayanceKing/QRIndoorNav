@@ -107,6 +107,20 @@ int main(void)
   /* DEBUG: 通过UART3发送初始化消息 */
   const char *init_msg = "System initialized\r\n";
   HAL_UART_Transmit(&huart3, (uint8_t *)init_msg, strlen(init_msg), 100);
+  
+  /* 电机自检：短暂转动以验证接线和驱动器 */
+  const char *test_msg = "Motor self-test...\r\n";
+  HAL_UART_Transmit(&huart3, (uint8_t *)test_msg, strlen(test_msg), 100);
+  
+  Motor_SetSpeed(MOTOR_A, 300);
+  Motor_SetSpeed(MOTOR_B, 300);
+  Motor_SetSpeed(MOTOR_C, 300);
+  Motor_SetSpeed(MOTOR_D, 300);
+  HAL_Delay(500);
+  Motor_Stop_All();
+  
+  const char *test_ok = "Motor test complete\r\n";
+  HAL_UART_Transmit(&huart3, (uint8_t *)test_ok, strlen(test_ok), 100);
 
   /* USER CODE END 2 */
 
@@ -166,6 +180,20 @@ int main(void)
                     "QR: %s @ (%.1f, %.1f)\r\n", 
                     qr_data.id, qr_data.world_x, qr_data.world_y);
             HAL_UART_Transmit(&huart3, (uint8_t *)debug_msg, strlen(debug_msg), 10);
+            
+            /* 自动激活导航：首次检测到QR后，设置目标点为当前位置向前50cm */
+            if (!navigation_active) {
+                float target_x = qr_data.world_x + 50.0f;
+                float target_y = qr_data.world_y;
+                Set_Navigation_Target(target_x, target_y, 10.0f);
+                navigation_active = true;
+                
+                char nav_msg[128];
+                snprintf(nav_msg, sizeof(nav_msg), 
+                        "Navigation activated: target (%.1f, %.1f)\r\n", 
+                        target_x, target_y);
+                HAL_UART_Transmit(&huart3, (uint8_t *)nav_msg, strlen(nav_msg), 10);
+            }
         }
         
         /* ========== 第二步：导航控制 ========== */
@@ -176,6 +204,17 @@ int main(void)
                 Motor_Stop_All();
                 const char *arrived_msg = "Target reached\r\n";
                 HAL_UART_Transmit(&huart3, (uint8_t *)arrived_msg, strlen(arrived_msg), 10);
+            }
+        } else {
+            /* DEBUG: 定期打印导航未激活状态 */
+            static uint32_t last_status_print = 0;
+            if (current_time - last_status_print >= 2000U) {
+                char status[128];
+                snprintf(status, sizeof(status),
+                         "STATUS: nav_active=%d link_alive=%d\r\n",
+                         navigation_active, QR_Comm_Link_Alive(3000U));
+                HAL_UART_Transmit(&huart3, (uint8_t *)status, strlen(status), 10);
+                last_status_print = current_time;
             }
         }
         

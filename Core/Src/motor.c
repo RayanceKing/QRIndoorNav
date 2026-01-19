@@ -7,6 +7,7 @@
 #include "stm32f4xx_hal.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 extern TIM_HandleTypeDef htim3;
 extern UART_HandleTypeDef huart3; /* 用于可选的串口调试输出 */
@@ -61,6 +62,11 @@ void Motor_SetSpeed(uint8_t motor_id, int16_t speed)
     /* 限制速度范围 */
     if (speed > PWM_MAX) speed = PWM_MAX;
     if (speed < PWM_MIN) speed = PWM_MIN;
+    
+    /* Motor D 方向反转补偿 */
+    if (motor_id == MOTOR_D) {
+        speed = -speed;
+    }
     
     const MotorPins_t *pins = &motor_pins[motor_id];
     
@@ -129,6 +135,13 @@ void Mecanum_Move(float vx, float vy, float omega)
         vC = vC * PWM_MAX / max_speed;
         vD = vD * PWM_MAX / max_speed;
     }
+    
+    /* DEBUG: 打印电机速度命令 */
+    char motor_dbg[128];
+    snprintf(motor_dbg, sizeof(motor_dbg),
+             "MOTORS: A=%d B=%d C=%d D=%d\r\n",
+             (int16_t)vA, (int16_t)vB, (int16_t)vC, (int16_t)vD);
+    HAL_UART_Transmit(&huart3, (uint8_t *)motor_dbg, strlen(motor_dbg), 5);
     
     Motor_SetSpeed(MOTOR_A, (int16_t)vA);
     Motor_SetSpeed(MOTOR_B, (int16_t)vB);
