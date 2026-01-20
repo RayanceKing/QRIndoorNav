@@ -197,3 +197,15 @@ void Set_PID_Parameters(const PIDParameters_t *params)
         pid_params = *params;
     }
 }
+
+/**
+ * @brief 获取当前位置（用于Wi-Fi发送）
+ */
+Position_t Get_Current_Position(void)
+{
+    Position_t pos;
+    pos.x = robot_pose.x;
+    pos.y = robot_pose.y;
+    pos.heading = robot_pose.theta * 180.0f / M_PI;  /* 转换为角度 */
+    return pos;
+}

@@ -84,4 +84,15 @@ void Calculate_Navigation_Error(float *distance, float *angle_error);
  */
 void Set_PID_Parameters(const PIDParameters_t *params);
 
+/**
+ * @brief 获取当前位置（用于Wi-Fi发送）
+ */
+typedef struct {
+    float x;
+    float y;
+    float heading;
+} Position_t;
+
+Position_t Get_Current_Position(void);
+
 #endif /* __LOCALIZATION_H */

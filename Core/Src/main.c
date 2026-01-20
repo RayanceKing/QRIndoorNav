@@ -24,6 +24,7 @@
 #include "motor.h"
 #include "qr_comm.h"
 #include "localization.h"
+#include "wifi_comm.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -46,6 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim3;
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart3_rx;
 
@@ -59,6 +61,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -74,6 +77,11 @@ static void MX_TIM3_Init(void);
   */
 int main(void)
 {
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
@@ -95,13 +103,15 @@ int main(void)
   MX_DMA_Init();
   MX_USART3_UART_Init();
   MX_TIM3_Init();
-
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   
   /* 初始化各个模块 */
   Motor_Init();
   QR_Comm_Init();
   QR_Comm_Start_Receive();
+  WiFi_Comm_Init();
+  WiFi_Comm_Start_Receive();
   Localization_Init();
   
   /* DEBUG: 通过UART3发送初始化消息 */
@@ -129,9 +139,12 @@ int main(void)
   
   /* 主控制循环参数 */
   #define CONTROL_PERIOD_MS  20  /* 50Hz控制频率 */
+  #define WIFI_SEND_PERIOD_MS 200  /* Wi-Fi发送周期5Hz */
   uint32_t last_control_time = 0;
+  uint32_t last_wifi_send = 0;
   
   bool navigation_active = false;
+  bool manual_control_mode = false;
     bool k210_ready_logged = false;
     bool link_lost = true;
     uint32_t last_link_warn = 0;
@@ -168,7 +181,63 @@ int main(void)
         }
       }
 
-        /* ========== 第一步：接收并处理二维码数据 ========== */
+        /* ========== 第一步：处理Wi-Fi命令 ========== */
+        WiFi_Command_t wifi_cmd;
+        if (WiFi_Comm_Process(&wifi_cmd)) {
+            switch (wifi_cmd.type) {
+                case WIFI_CMD_GOTO:
+                    /* 前往目标坐标 */
+                    Set_Navigation_Target(wifi_cmd.goto_cmd.target_x, 
+                                         wifi_cmd.goto_cmd.target_y, 10.0f);
+                    navigation_active = true;
+                    manual_control_mode = false;
+                    WiFi_Send_Status("NAVIGATING");
+                    break;
+                    
+                case WIFI_CMD_MOVE:
+                    /* 手动控制 */
+                    manual_control_mode = true;
+                    navigation_active = false;
+                    {
+                        float vx = 0, vy = 0, omega = 0;
+                        int16_t spd = wifi_cmd.move_cmd.speed;
+                        switch (wifi_cmd.move_cmd.direction) {
+                            case MOVE_FORWARD:    vx = spd;  break;
+                            case MOVE_BACKWARD:   vx = -spd; break;
+                            case MOVE_LEFT:       vy = spd;  break;
+                            case MOVE_RIGHT:      vy = -spd; break;
+                            case MOVE_TURN_LEFT:  omega = spd; break;
+                            case MOVE_TURN_RIGHT: omega = -spd; break;
+                        }
+                        Mecanum_Move(vx, vy, omega);
+                    }
+                    WiFi_Send_Status("MANUAL");
+                    break;
+                    
+                case WIFI_CMD_STOP:
+                    Motor_Stop_All();
+                    navigation_active = false;
+                    manual_control_mode = false;
+                    WiFi_Send_Status("IDLE");
+                    break;
+                    
+                case WIFI_CMD_QUERY:
+                    /* 发送当前状态 */
+                    if (navigation_active) {
+                        WiFi_Send_Status("NAVIGATING");
+                    } else if (manual_control_mode) {
+                        WiFi_Send_Status("MANUAL");
+                    } else {
+                        WiFi_Send_Status("IDLE");
+                    }
+                    break;
+                    
+                default:
+                    break;
+            }
+        }
+        
+        /* ========== 第二步：接收并处理二维码数据 ========== */
         QR_Data_t qr_data;
         if (QR_Comm_Process(&qr_data)) {
             /* 成功接收二维码数据，更新位置 */
@@ -181,8 +250,8 @@ int main(void)
                     qr_data.id, qr_data.world_x, qr_data.world_y);
             HAL_UART_Transmit(&huart3, (uint8_t *)debug_msg, strlen(debug_msg), 10);
             
-            /* 自动激活导航：首次检测到QR后，设置目标点为当前位置向前50cm */
-            if (!navigation_active) {
+            /* 自动激活导航：首次检测到QR后，仅在无Wi-Fi控制时激活 */
+            if (!navigation_active && !manual_control_mode) {
                 float target_x = qr_data.world_x + 50.0f;
                 float target_y = qr_data.world_y;
                 Set_Navigation_Target(target_x, target_y, 10.0f);
@@ -196,8 +265,8 @@ int main(void)
             }
         }
         
-        /* ========== 第二步：导航控制 ========== */
-        if (navigation_active) {
+        /* ========== 第三步：导航控制 ========== */
+        if (navigation_active && !manual_control_mode) {
             if (Navigate_Update()) {
                 /* 已到达目标 */
                 navigation_active = false;
@@ -218,6 +287,13 @@ int main(void)
             }
         }
         
+        /* ========== 第四步：定期发送位置到Wi-Fi ========== */
+        if (current_time - last_wifi_send >= WIFI_SEND_PERIOD_MS) {
+            last_wifi_send = current_time;
+            Position_t pos = Get_Current_Position();
+            WiFi_Send_Position(pos.x, pos.y, pos.heading);
+        }
+        
         /* 示例：自动导航到目标点(300, 300)
          * 取消下面的注释来启用自动导航
          */
@@ -226,13 +302,10 @@ int main(void)
         //     navigation_active = true;
         // }
     }
-    
-    /* 其他后台任务可以在这里添加 */
-    
     /* USER CODE END WHILE */
-  }
 
-  /* USER CODE BEGIN 3 */
+    /* USER CODE BEGIN 3 */
+  }
   /* USER CODE END 3 */
 }
 
@@ -294,6 +367,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
@@ -306,6 +380,15 @@ static void MX_TIM3_Init(void)
   htim3.Init.Period = 1000-1;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
   {
     Error_Handler();
@@ -340,6 +423,39 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
 
 }
 
