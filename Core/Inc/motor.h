@@ -3,8 +3,8 @@
  * @brief TB6612 四路电机驱动模块
  * 
  * 电机映射：
- * Motor A: PA6  (TIM3_CH1) - 左前
- * Motor B: PA7  (TIM3_CH2) - 右前
+ * Motor A: PA6  (TIM3_CH1) - 右前
+ * Motor B: PA7  (TIM3_CH2) - 左前
  * Motor C: PB0  (TIM3_CH3) - 左后
  * Motor D: PB1  (TIM3_CH4) - 右后
  */
@@ -16,8 +16,8 @@
 #include <stdint.h>
 
 /* 电机通道定义 */
-#define MOTOR_A     0  // 左前
-#define MOTOR_B     1  // 右前
+#define MOTOR_A     0  // 右前
+#define MOTOR_B     1  // 左前
 #define MOTOR_C     2  // 左后
 #define MOTOR_D     3  // 右后
 
@@ -57,8 +57,8 @@ void Motor_Stop_All(void);
  * @param omega: 旋转速度 (-999~999)
  * 
  * 麦轮速度映射公式：
- * vA = vx + vy + omega  (左前)
- * vB = vx - vy - omega  (右前)
+ * vA = vx - vy - omega  (右前)
+ * vB = vx + vy + omega  (左前)
  * vC = vx - vy + omega  (左后)
  * vD = vx + vy - omega  (右后)
  */

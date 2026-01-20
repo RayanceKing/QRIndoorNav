@@ -12,11 +12,11 @@
 extern TIM_HandleTypeDef htim3;
 extern UART_HandleTypeDef huart3; /* 用于可选的串口调试输出 */
 
-/* 电机引脚映射表 */
+/* 电机引脚映射表（按实际接线：A=右前 B=左前 C=左后 D=右后） */
 static const MotorPins_t motor_pins[4] = {
-    /* Motor A - 左前 */
+    /* Motor A - 右前 */
     {GPIOC, AIN1_Pin, GPIOC, AIN2_Pin},
-    /* Motor B - 右前 */
+    /* Motor B - 左前 */
     {GPIOD, BIN1_Pin, GPIOD, BIN2_Pin},
     /* Motor C - 左后 */
     {GPIOC, CIN1_Pin, GPIOG, CIN2_Pin},
@@ -63,8 +63,8 @@ void Motor_SetSpeed(uint8_t motor_id, int16_t speed)
     if (speed > PWM_MAX) speed = PWM_MAX;
     if (speed < PWM_MIN) speed = PWM_MIN;
     
-    /* Motor D 方向反转补偿 */
-    if (motor_id == MOTOR_D) {
+    /* Motor D and Motor A 方向反转补偿 */
+    if (motor_id == MOTOR_D || motor_id == MOTOR_A) {
         speed = -speed;
     }
     
@@ -116,9 +116,9 @@ void Motor_Stop_All(void)
  */
 void Mecanum_Move(float vx, float vy, float omega)
 {
-    /* 麦克纳姆轮运动学模型 */
-    float vA = vx + vy + omega;  /* 左前 */
-    float vB = vx - vy - omega;  /* 右前 */
+    /* 按实际接线计算：A=右前 B=左前 C=左后 D=右后 */
+    float vA = vx - vy - omega;  /* 右前 */
+    float vB = vx + vy + omega;  /* 左前 */
     float vC = vx - vy + omega;  /* 左后 */
     float vD = vx + vy - omega;  /* 右后 */
     
