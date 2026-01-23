@@ -10,12 +10,14 @@
 - 基于编码器的里程计与运动控制（STM32 HAL）。
 - 通过 TB6612 驱动电机并支持 PWM 速度控制与方向控制。
 - 支持使用 VSCode + EIDE + OpenOCD 在 macOS 上编译与烧录（gcc-arm-embedded）。
+- 蓝牙远程控制支持（DX-WF24-A 模块，透传模式）。
 
 ## 硬件清单
 - 主控：STM32F407ZGT6 最小系统板
 - 视觉模块：K210（带摄像头，运行识别脚本）
 - 轮组：520 编码器麦轮套装（含 A/B 编码器信号）
 - 驱动：TB6612 四路电机驱动模块
+- 无线通信：DX-WF24-A（蓝牙 + Wi-Fi 模块）
 - 供电：电池或稳定电源（按电机/驱动额定电压配置）
 - 调试/烧录：ST-Link / J-Link
 
@@ -48,6 +50,17 @@
 
   - `USART3_TX` -> PB10
   - `USART3_RX` -> PB11
+
+- 串口（DX-WF24-A 蓝牙模块通信）在工程中使用 `USART2`，映射为：
+
+  - `USART2_TX` -> PA2
+  - `USART2_RX` -> PA3
+  - 波特率：115200 baud
+  - 数据位：8
+  - 停止位：1
+  - 校验位：无
+  - 流控：无
+  - 工作模式：透传模式（通过AT+BLUFISEND=1命令进入）
 
 - 编码器（增量 A/B 信号）在当前代码中尚未看到定时器输入捕获或 `HAL_TIM_Encoder` 的初始化，因此编码器引脚尚未在工程中定义。建议将编码器 A/B 信号接到支持外部中断或定时器输入捕获的引脚，然后在代码中配置对应的 `TIMx` 为编码器接口（`HAL_TIM_Encoder_Init`）。
 
@@ -87,6 +100,34 @@
 - 异步串口数据接收（UART空闲中断 + DMA）
 - 状态管理与导航使能控制
 
+✅ **蓝牙遥控功能**
+- DX-WF24-A 蓝牙模块集成（UART2，115200 波特率）
+- 手机应用通过蓝牙发送控制命令
+- 实时位置反馈（5Hz 发送频率）
+- 支持自动导航与手动控制
+
+
+### DX-WF24-A 蓝牙通信协议
+**连接流程：**
+1. DX-WF24-A 模块上电后进行蓝牙初始化
+2. 手机端通过蓝牙搜索并连接模块
+3. 连接成功后模块向 STM32 发送 `BLE_CONNECT_SUCCESS` 消息
+4. STM32 自动发送 `AT+BLUFISEND=1\r\n` 进入透传模式
+5. 之后所有收发数据为透传模式（无 AT 命令识别）
+
+**手机 → STM32 命令格式：**
+```
+CMD:GOTO,x,y        // 自动导航到坐标 (x,y)
+CMD:MOVE,dir,speed  // 手动控制移动 (dir: F/B/L/R/TL/TR, speed: 0-999)
+CMD:STOP            // 停止运动
+CMD:QUERY           // 查询当前状态
+```
+
+**STM32 → 手机 反馈格式：**
+```
+POS:x,y,heading     // 当前位置坐标与航向角（整数精度，5Hz 发送频率）
+STATUS:state        // 状态反馈 (IDLE/NAV/MANUAL)
+```
 ### K210 数据格式
 ```
 $QR_ID,world_x,world_y|corner1_x,corner1_y|corner2_x,corner2_y|corner3_x,corner3_y|corner4_x,corner4_y

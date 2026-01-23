@@ -47,7 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim3;
 
-UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart3_rx;
 
@@ -61,7 +61,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM3_Init(void);
-static void MX_USART1_UART_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -103,7 +103,7 @@ int main(void)
   MX_DMA_Init();
   MX_USART3_UART_Init();
   MX_TIM3_Init();
-  MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   
   /* 初始化各个模块 */
@@ -157,6 +157,9 @@ int main(void)
     if (current_time - last_control_time >= CONTROL_PERIOD_MS) {
         last_control_time = current_time;
         
+      /* 输出WiFi调试/服务（非阻塞） */
+      WiFi_Print_Debug();
+
       /* 链路健康监测和事件回应 */
       if (QR_Comm_Is_K210_Ready() && !k210_ready_logged) {
         const char *ready_msg = "K210 ready\r\n";
@@ -184,6 +187,11 @@ int main(void)
         /* ========== 第一步：处理Wi-Fi命令 ========== */
         WiFi_Command_t wifi_cmd;
         if (WiFi_Comm_Process(&wifi_cmd)) {
+            /* 调试输出：命令已接收 */
+            char cmd_debug[64];
+            snprintf(cmd_debug, sizeof(cmd_debug), "[Main] WiFi CMD type=%d\r\n", wifi_cmd.type);
+            HAL_UART_Transmit(&huart3, (uint8_t *)cmd_debug, strlen(cmd_debug), 10);
+            
             switch (wifi_cmd.type) {
                 case WIFI_CMD_GOTO:
                     /* 前往目标坐标 */
@@ -201,6 +209,13 @@ int main(void)
                     {
                         float vx = 0, vy = 0, omega = 0;
                         int16_t spd = wifi_cmd.move_cmd.speed;
+                        
+                        /* 调试输出：MOVE命令详情 */
+                        char move_debug[64];
+                        snprintf(move_debug, sizeof(move_debug), "[Main] MOVE dir=%d spd=%d\r\n", 
+                                wifi_cmd.move_cmd.direction, spd);
+                        HAL_UART_Transmit(&huart3, (uint8_t *)move_debug, strlen(move_debug), 10);
+                        
                         switch (wifi_cmd.move_cmd.direction) {
                             case MOVE_FORWARD:    vx = spd;  break;
                             case MOVE_BACKWARD:   vx = -spd; break;
@@ -210,6 +225,12 @@ int main(void)
                             case MOVE_TURN_RIGHT: omega = -spd; break;
                         }
                         Mecanum_Move(vx, vy, omega);
+                        
+                        /* 调试输出：Mecanum参数 */
+                        char mec_debug[64];
+                        snprintf(mec_debug, sizeof(mec_debug), "[Main] Mecanum vx=%.0f vy=%.0f w=%.0f\r\n", 
+                                vx, vy, omega);
+                        HAL_UART_Transmit(&huart3, (uint8_t *)mec_debug, strlen(mec_debug), 10);
                     }
                     WiFi_Send_Status("MANUAL");
                     break;
@@ -274,24 +295,15 @@ int main(void)
                 const char *arrived_msg = "Target reached\r\n";
                 HAL_UART_Transmit(&huart3, (uint8_t *)arrived_msg, strlen(arrived_msg), 10);
             }
-        } else {
-            /* DEBUG: 定期打印导航未激活状态 */
-            static uint32_t last_status_print = 0;
-            if (current_time - last_status_print >= 2000U) {
-                char status[128];
-                snprintf(status, sizeof(status),
-                         "STATUS: nav_active=%d link_alive=%d\r\n",
-                         navigation_active, QR_Comm_Link_Alive(3000U));
-                HAL_UART_Transmit(&huart3, (uint8_t *)status, strlen(status), 10);
-                last_status_print = current_time;
-            }
         }
         
         /* ========== 第四步：定期发送位置到Wi-Fi ========== */
-        if (current_time - last_wifi_send >= WIFI_SEND_PERIOD_MS) {
-            last_wifi_send = current_time;
-            Position_t pos = Get_Current_Position();
-            WiFi_Send_Position(pos.x, pos.y, pos.heading);
+        if (WiFi_Transparent_Mode_Ready()) {  /* 只有进入透传模式才发送POS */
+            if (current_time - last_wifi_send >= WIFI_SEND_PERIOD_MS) {
+                last_wifi_send = current_time;
+                Position_t pos = Get_Current_Position();
+                WiFi_Send_Position(pos.x, pos.y, pos.heading);
+            }
         }
         
         /* 示例：自动导航到目标点(300, 300)
@@ -427,35 +439,35 @@ static void MX_TIM3_Init(void)
 }
 
 /**
-  * @brief USART1 Initialization Function
+  * @brief USART2 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_USART1_UART_Init(void)
+static void MX_USART2_UART_Init(void)
 {
 
-  /* USER CODE BEGIN USART1_Init 0 */
+  /* USER CODE BEGIN USART2_Init 0 */
 
-  /* USER CODE END USART1_Init 0 */
+  /* USER CODE END USART2_Init 0 */
 
-  /* USER CODE BEGIN USART1_Init 1 */
+  /* USER CODE BEGIN USART2_Init 1 */
 
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART1_Init 2 */
+  /* USER CODE BEGIN USART2_Init 2 */
 
-  /* USER CODE END USART1_Init 2 */
+  /* USER CODE END USART2_Init 2 */
 
 }
 

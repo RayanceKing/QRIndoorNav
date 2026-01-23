@@ -93,9 +93,14 @@ void WiFi_Send_Status(const char *state);
 bool WiFi_Link_Alive(uint32_t timeout_ms);
 
 /**
- * @brief UART接收回调（由中断调用）
- * @param byte: 接收的字节
+ * @brief 检查透传模式是否就绪
+ * @return true表示已进入透传模式，可以收发数据
  */
-void WiFi_UART_RxCallback(uint8_t byte);
+bool WiFi_Transparent_Mode_Ready(void);
+
+/**
+ * @brief 输出调试信息（在主循环中调用）
+ */
+void WiFi_Print_Debug(void);
 
 #endif /* __WIFI_COMM_H */
