@@ -2,8 +2,8 @@
  * @file qr_comm.h
  * @brief K210 通信与二维码数据处理
  * 
- * 数据格式：$QR_ID,world_x,world_y|corner1_x,corner1_y|...|corner4_x,corner4_y\n
- * 例：$QR01,150.5,200.3|120,80|180,80|180,140|120,140\n
+ * 数据格式：$POSE,id,tx,ty,tz,rx,ry,rz\r\n
+ * 例：$POSE,0,35,-22,-109,233,18,29\r\n
  */
 
 #ifndef __QR_COMM_H
@@ -13,13 +13,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* 二维码数据结构 */
+/* AprilTag位置数据结构 */
 typedef struct {
-    char id[16];           /* 二维码ID */
-    float world_x;         /* 世界坐标 X */
-    float world_y;         /* 世界坐标 Y */
-    uint16_t corner_x[4];  /* 四个角点的像素坐标 */
-    uint16_t corner_y[4];
+    int8_t id;             /* AprilTag ID (0-3) 或 -1 表示融合位置 */
+    int16_t x;             /* 世界坐标 X (cm) */
+    int16_t y;             /* 世界坐标 Y (cm) */
+    int16_t yaw;           /* 偶长角 (度) */
+    bool valid;            /* 数据有效性标志 */
     uint32_t timestamp;    /* 接收时间戳 */
 } QR_Data_t;
 

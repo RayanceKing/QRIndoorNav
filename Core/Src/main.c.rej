@@ -1,0 +1,11 @@
+@@ -224,8 +224,8 @@
+                             case MOVE_BACKWARD:   vx = -spd; break;
+                             case MOVE_LEFT:       vy = spd;  break;
+                             case MOVE_RIGHT:      vy = -spd; break;
+-                            case MOVE_TURN_LEFT:  omega = spd; break;
+-                            case MOVE_TURN_RIGHT: omega = -spd; break;
++                            case MOVE_TURN_LEFT:  omega = -spd; break;
++                            case MOVE_TURN_RIGHT: omega = spd; break;
+                         }
+ 
+ 

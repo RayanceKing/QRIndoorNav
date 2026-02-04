@@ -75,6 +75,11 @@ bool Check_Target_Reached(void);
 bool Navigate_Update(void);
 
 /**
+ * @brief 检查是否已启用定位
+ */
+bool Is_Positioning_Enabled(void);
+
+/**
  * @brief 计算机器人到目标的距离和角度
  */
 void Calculate_Navigation_Error(float *distance, float *angle_error);

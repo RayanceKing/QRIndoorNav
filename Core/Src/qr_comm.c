@@ -54,12 +54,13 @@ void QR_Comm_Start_Receive(void)
 }
 
 /**
- * @brief 解析二维码数据包
- * 格式：$QR01,150.5,200.3|120,80|180,80|180,140|120,140\n
+ * @brief 解析AprilTag位置数据包
+ * 格式：$POS,id,x,y,yaw\r\n
+ * 例：$POS,0,50,80,90\r\n
  */
 static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
 {
-    if (length < 4 || data[0] != '$') {
+    if (length < 10 || data[0] != '$') {
         return false;
     }
 
@@ -69,75 +70,30 @@ static bool QR_Parse_Data(const uint8_t *data, uint16_t length, QR_Data_t *qr)
     memcpy(tmp, data, length);
     tmp[length] = '\0';
 
-    /* 先尝试使用 sscanf 快速解析完整格式（世界坐标以整数发送，例如：QR01,150,200） */
-    char id[16] = {0};
-    int world_x_i = 0, world_y_i = 0;
-    int cx[4], cy[4];
-    int parsed = sscanf(tmp + 1, "%15[^,],%d,%d|%d,%d|%d,%d|%d,%d|%d,%d", id, &world_x_i, &world_y_i,
-                        &cx[0], &cy[0], &cx[1], &cy[1], &cx[2], &cy[2], &cx[3], &cy[3]);
+    /* 使用更兼容的格式：全部用int解析 */
+    int pos_id = 0, x = 0, y = 0, yaw = 0;
+    
+    int parsed = sscanf(tmp + 1, "POS,%d,%d,%d,%d", 
+                        &pos_id, &x, &y, &yaw);
 
-    if (parsed == 11) {
-        /* 全部解析成功（将整数坐标赋值为浮点字段以兼容定位模块） */
-        strcpy(qr->id, id);
-        qr->world_x = (float)world_x_i;
-        qr->world_y = (float)world_y_i;
-        for (int i = 0; i < 4; i++) {
-            qr->corner_x[i] = (uint16_t)cx[i];
-            qr->corner_y[i] = (uint16_t)cy[i];
-        }
+    if (parsed == 4) {
+        /* 全部解析成功 */
+        qr->id = (int8_t)pos_id;  /* 支持负数ID（-1表示融合位置） */
+        qr->x = (int16_t)x;
+        qr->y = (int16_t)y;
+        qr->yaw = (int16_t)yaw;
+        qr->valid = true;
         qr->timestamp = HAL_GetTick();
+        
         return true;
     }
 
-    /* 若 sscanf 失败，退回到逐字段解析以便更灵活地容错 */
-    const char *p = tmp + 1; /* 跳过 $ */
-    char *endptr = NULL;
-
-    /* ID */
-    int i = 0;
-    while (*p && *p != ',' && i < 15) id[i++] = *p++;
-    id[i] = '\0';
-    if (*p != ',') return false; p++;
-
-    /* world_x（作为整数发送） */
-    long wx = strtol(p, &endptr, 10);
-    if (endptr == p) return false; p = endptr;
-    if (*p != ',') return false; p++;
-
-    /* world_y（作为整数发送） */
-    long wy = strtol(p, &endptr, 10);
-    if (endptr == p) return false; p = endptr;
-    if (*p != '|') return false; p++;
-
-    /* corners */
-    uint16_t corners_x[4] = {0}, corners_y[4] = {0};
-    for (i = 0; i < 4; i++) {
-        long tx = strtol(p, &endptr, 10);
-        if (endptr == p) return false;
-        corners_x[i] = (uint16_t)tx;
-        p = endptr;
-        if (*p != ',') return false; p++;
-
-        long ty = strtol(p, &endptr, 10);
-        if (endptr == p) return false;
-        corners_y[i] = (uint16_t)ty;
-        p = endptr;
-        if (i < 3) {
-            if (*p != '|') return false;
-            p++;
-        }
-    }
-
-    strcpy(qr->id, id);
-    qr->world_x = (float)wx;
-    qr->world_y = (float)wy;
-    for (i = 0; i < 4; i++) {
-        qr->corner_x[i] = corners_x[i];
-        qr->corner_y[i] = corners_y[i];
-    }
-    qr->timestamp = HAL_GetTick();
-
-    return true;
+    /* 解析失败，输出调试信息 */
+    char debug[64];
+    snprintf(debug, sizeof(debug), "PARSE_ERR: parsed=%d (id=%d,x=%d,y=%d,yaw=%d)\r\n", 
+             parsed, pos_id, x, y, yaw);
+    HAL_UART_Transmit(&huart3, (uint8_t *)debug, strlen(debug), 10);
+    return false;
 }
 
 /**
@@ -148,6 +104,9 @@ bool QR_Comm_Process(QR_Data_t *qr_data)
     if (!uart_buffer.data_ready) {
         return false;
     }
+    
+    /* 立即清除标志位，防止重入 */
+    uart_buffer.data_ready = false;
     
     /* 查找数据包边界：$ 开始，\n 结束 */
     uint8_t *start = NULL;
@@ -169,42 +128,46 @@ bool QR_Comm_Process(QR_Data_t *qr_data)
     }
     
     uint16_t packet_len = end - start + 1;
-        char packet[RX_BUFFER_SIZE] = {0};
-        uint16_t copy_len = packet_len < (RX_BUFFER_SIZE - 1) ? packet_len : (RX_BUFFER_SIZE - 1);
-        memcpy(packet, start, copy_len);
-        packet[copy_len] = '\0';
+    char packet[RX_BUFFER_SIZE] = {0};
+    uint16_t copy_len = packet_len < (RX_BUFFER_SIZE - 1) ? packet_len : (RX_BUFFER_SIZE - 1);
+    memcpy(packet, start, copy_len);
+    packet[copy_len] = '\0';
 
-        /* 去除调试输出：仅保留解析与回复行为 */
+    /* USART3调试输出：原始K210报文 */
+    HAL_UART_Transmit(&huart3, (uint8_t *)"RX:", 3, 10);
+    HAL_UART_Transmit(&huart3, (uint8_t *)packet, (uint16_t)strlen(packet), 10);
 
-        /* 处理心跳与初始化消息 */
-        if (strncmp(packet, "$HEARTBEAT", 10) == 0) {
-            last_heartbeat_tick = HAL_GetTick();
-            uart_buffer.data_ready = false;
-            QR_Send_ACK("HB");
-            return false;
-        }
+    /* 处理心跳与初始化消息 */
+    if (strncmp(packet, "$HEARTBEAT", 10) == 0) {
+        last_heartbeat_tick = HAL_GetTick();
+        return false;
+    }
 
-        if (strncmp(packet, "$INIT", 5) == 0) {
-            k210_ready = true;
-            last_heartbeat_tick = HAL_GetTick();
-            uart_buffer.data_ready = false;
-            QR_Send_ACK("INIT");
-            return false;
-        }
+    if (strncmp(packet, "$INIT", 5) == 0) {
+        k210_ready = true;
+        last_heartbeat_tick = HAL_GetTick();
+        const char *init_ok = "K210_INIT_OK\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)init_ok, strlen(init_ok), 10);
+        return false;
+    }
 
-        /* 正常二维码数据 */
-        if (QR_Parse_Data((uint8_t *)packet, packet_len, qr_data)) {
-            /* 解析成功，保存并回复 ACK（不打印调试信息） */
-            /* 保存最新数据 */
-            memcpy(&latest_qr_data, qr_data, sizeof(QR_Data_t));
-            new_data_flag = true;
-            last_heartbeat_tick = HAL_GetTick();
-            QR_Send_ACK("QR");
-            uart_buffer.data_ready = false;
-            return true;
-        }
+    /* 正常二维码数据 */
+    if (QR_Parse_Data((uint8_t *)packet, packet_len, qr_data)) {
+        /* 解析成功，保存并回复 ACK */
+        memcpy(&latest_qr_data, qr_data, sizeof(QR_Data_t));
+        new_data_flag = true;
+        last_heartbeat_tick = HAL_GetTick();
+        
+        /* 输出SUCCESS以便诊断 */
+        const char *success = "PARSE_OK\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)success, strlen(success), 10);
+        
+        return true;
+    }
     
-    uart_buffer.data_ready = false;
+    /* 解析失败 */
+    const char *fail = "PARSE_FAIL\r\n";
+    HAL_UART_Transmit(&huart3, (uint8_t *)fail, strlen(fail), 10);
     return false;
 }
 
@@ -262,15 +225,23 @@ void QR_Comm_Clear_Buffer(void)
  */
 void QR_UART_Idle_Callback(void)
 {
+    /* 如果上一帧数据还未处理完，跳过本次接收 */
+    if (uart_buffer.data_ready) {
+        /* 清除DMA计数器但不覆盖缓冲区 */
+        HAL_UART_AbortReceive_IT(&huart3);
+        HAL_UART_Receive_DMA(&huart3, rx_dma_buffer, RX_BUFFER_SIZE);
+        return;
+    }
+    
     /* 停止DMA并获取接收长度 */
     HAL_UART_AbortReceive_IT(&huart3);
     
     uint32_t transferred = RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart3_rx);
     
-    if (transferred > 0) {
+    if (transferred > 0 && transferred < RX_BUFFER_SIZE) {
         memcpy(uart_buffer.buffer, rx_dma_buffer, transferred);
         uart_buffer.length = transferred;
-        uart_buffer.data_ready = true;
+        uart_buffer.data_ready = true;  /* 设置标志位，主循环将处理 */
     }
     
     /* 重新启动DMA接收 */

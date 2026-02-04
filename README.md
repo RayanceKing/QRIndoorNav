@@ -75,6 +75,7 @@
 - 驱动与第三方库：`Drivers/STM32F4xx_HAL_Driver`。
 - 构建输出：`build/`。
 - **使用说明文档**：[QR_SYSTEM_USAGE.md](QR_SYSTEM_USAGE.md)（详细的功能说明和API文档）
+ - 相机标定配置：在 [Core/Inc/camera_calib.h](Core/Inc/camera_calib.h) 填入 GC2145 的实际内参（`fx/fy/cx/cy`）与二维码边长 `MARKER_SIZE_CM`，主程序会在 [Core/Src/main.c](Core/Src/main.c#L106-L116) 中加载。
 
 ## 系统功能
 
@@ -133,7 +134,7 @@ STATUS:state        // 状态反馈 (IDLE/NAV/MANUAL)
 $QR_ID,world_x,world_y|corner1_x,corner1_y|corner2_x,corner2_y|corner3_x,corner3_y|corner4_x,corner4_y
 ```
 
-示例：`$QR01,150.5,200.3|120,80|180,80|180,140|120,140`
+示例：`$QR01,150,200|120,80|180,80|180,140|120,140`
 
 ### 主要 API 函数
 ```c
