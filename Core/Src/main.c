@@ -25,6 +25,7 @@
 #include "qr_comm.h"
 #include "localization.h"
 #include "wifi_comm.h"
+#include "camera_calib.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -113,6 +114,9 @@ int main(void)
   WiFi_Comm_Init();
   WiFi_Comm_Start_Receive();
   Localization_Init();
+  /* 配置PnP所需参数：使用 GC2145 实际标定结果 */
+  Set_Camera_Intrinsics(CAMERA_FX, CAMERA_FY, CAMERA_CX, CAMERA_CY);
+  Set_Marker_Size(MARKER_SIZE_CM);
   
   /* DEBUG: 通过UART3发送初始化消息 */
   const char *init_msg = "System initialized\r\n";
@@ -195,21 +199,10 @@ int main(void)
             switch (wifi_cmd.type) {
                 case WIFI_CMD_GOTO:
                     /* 前往目标坐标 */
-                    char goto_debug[128];
-                    snprintf(goto_debug, sizeof(goto_debug), 
-                            "[GOTO] Target=(%.1f,%.1f) Current=(%.1f,%.1f)\r\n",
-                            wifi_cmd.goto_cmd.target_x, wifi_cmd.goto_cmd.target_y,
-                            Get_Robot_Pose()->x, Get_Robot_Pose()->y);
-                    HAL_UART_Transmit(&huart3, (uint8_t *)goto_debug, strlen(goto_debug), 10);
-                    
                     Set_Navigation_Target(wifi_cmd.goto_cmd.target_x, 
-                                         wifi_cmd.goto_cmd.target_y, 3.0f);
+                                         wifi_cmd.goto_cmd.target_y, 10.0f);
                     navigation_active = true;
                     manual_control_mode = false;
-                    
-                    const char *nav_start = "[GOTO] Navigation ACTIVATED\r\n";
-                    HAL_UART_Transmit(&huart3, (uint8_t *)nav_start, strlen(nav_start), 10);
-                    
                     WiFi_Send_Status("NAVIGATING");
                     break;
                     
@@ -232,8 +225,8 @@ int main(void)
                             case MOVE_BACKWARD:   vx = -spd; break;
                             case MOVE_LEFT:       vy = spd;  break;
                             case MOVE_RIGHT:      vy = -spd; break;
-                            case MOVE_TURN_LEFT:  omega = spd; break;
-                            case MOVE_TURN_RIGHT: omega = -spd; break;
+                            case MOVE_TURN_LEFT:  omega = -spd; break;
+                            case MOVE_TURN_RIGHT: omega = spd; break;
                         }
                         Mecanum_Move(vx, vy, omega);
                         
@@ -271,93 +264,51 @@ int main(void)
         
         /* ========== 第二步：接收并处理二维码数据 ========== */
         QR_Data_t qr_data;
-        memset(&qr_data, 0, sizeof(qr_data));
-        bool qr_process_result = QR_Comm_Process(&qr_data);
-        
-        if (qr_process_result) {
-            /* 成功接收位置数据，更新位置 */
-            const char *success_msg = "SUCCESS: QR_Comm_Process returned true\r\n";
-            HAL_UART_Transmit(&huart3, (uint8_t *)success_msg, strlen(success_msg), 10);
-            
-            printf("DEBUG: Calling Update_Position_From_QR(id=%d, x=%d, y=%d, yaw=%d)\r\n",
-                   qr_data.id, qr_data.x, qr_data.y, qr_data.yaw);
+        if (QR_Comm_Process(&qr_data)) {
+          /* 成功接收定位数据：$POS直接融合，角点包优先使用PnP */
+          if (qr_data.pose_valid || !Update_Pose_From_QR_PnP(&qr_data)) {
             Update_Position_From_QR(&qr_data);
+          }
             
-            /* DEBUG: 打印接收到的位置数据 */
-            RobotPose_t *pose = Get_Robot_Pose();
+            /* DEBUG: 打印接收到的数据 */
             char debug_msg[128];
-            if (qr_data.id == -1) {
-                snprintf(debug_msg, sizeof(debug_msg), 
-                        "[FUSED]: pos=(%d,%d) yaw=%d | robot=(%d,%d) - Positioning: %s\r\n", 
-                        qr_data.x, qr_data.y, qr_data.yaw,
-                        (int)pose->x, (int)pose->y,
-                        Is_Positioning_Enabled() ? "ENABLED" : "DISABLED");
-            } else {
-                snprintf(debug_msg, sizeof(debug_msg), 
-                        "TAG%d: pos=(%d,%d) yaw=%d | robot=(%d,%d) - Positioning: %s\r\n", 
-                        qr_data.id, qr_data.x, qr_data.y, qr_data.yaw,
-                        (int)pose->x, (int)pose->y,
-                        Is_Positioning_Enabled() ? "ENABLED" : "DISABLED");
-            }
+            snprintf(debug_msg, sizeof(debug_msg), 
+                    "%s: %s @ (%.1f, %.1f) heading=%.1f\r\n",
+                    qr_data.pose_valid ? "POS" : "QR",
+                    qr_data.id, qr_data.world_x, qr_data.world_y, qr_data.heading_deg);
+            HAL_UART_Transmit(&huart3, (uint8_t *)debug_msg, strlen(debug_msg), 10);
             
-            /* 自动激活导航已禁用 - 仅通过WiFi GOTO命令启动导航 */
+            /* 自动激活导航：首次检测到QR后，仅在无Wi-Fi控制时激活 */
+            if (!navigation_active && !manual_control_mode) {
+                float target_x = qr_data.world_x + 50.0f;
+                float target_y = qr_data.world_y;
+                Set_Navigation_Target(target_x, target_y, 10.0f);
+                navigation_active = true;
+                
+                char nav_msg[128];
+                snprintf(nav_msg, sizeof(nav_msg), 
+                        "Navigation activated: target (%.1f, %.1f)\r\n", 
+                        target_x, target_y);
+                HAL_UART_Transmit(&huart3, (uint8_t *)nav_msg, strlen(nav_msg), 10);
+            }
         }
         
         /* ========== 第三步：导航控制 ========== */
-        static uint32_t last_nav_debug = 0;
         if (navigation_active && !manual_control_mode) {
-            /* 每秒输出一次导航状态 */
-            if (current_time - last_nav_debug >= 1000) {
-                last_nav_debug = current_time;
-                char nav_debug[128];
-                snprintf(nav_debug, sizeof(nav_debug), 
-                        "[NAV] Active, calling Navigate_Update()...\r\n");
-                HAL_UART_Transmit(&huart3, (uint8_t *)nav_debug, strlen(nav_debug), 10);
-            }
-            
             if (Navigate_Update()) {
                 /* 已到达目标 */
                 navigation_active = false;
                 Motor_Stop_All();
-                const char *arrived_msg = "[NAV] Target reached\r\n";
+                const char *arrived_msg = "Target reached\r\n";
                 HAL_UART_Transmit(&huart3, (uint8_t *)arrived_msg, strlen(arrived_msg), 10);
-            }
-        } else {
-            /* 每2秒输出一次非激活状态 */
-            static uint32_t last_inactive_debug = 0;
-            if (current_time - last_inactive_debug >= 2000) {
-                last_inactive_debug = current_time;
-                char inactive_debug[128];
-                snprintf(inactive_debug, sizeof(inactive_debug),
-                        "[NAV] Inactive: nav_active=%d, manual=%d\r\n",
-                        navigation_active, manual_control_mode);
-                HAL_UART_Transmit(&huart3, (uint8_t *)inactive_debug, strlen(inactive_debug), 10);
             }
         }
         
         /* ========== 第四步：定期发送位置到Wi-Fi ========== */
-        static uint32_t last_wifi_status_print = 0;
-        if (current_time - last_wifi_status_print >= 2000) {
-            last_wifi_status_print = current_time;
-            char status_msg[128];
-            snprintf(status_msg, sizeof(status_msg),
-                    "STATUS: WiFi_Ready=%d, Positioning=%d, nav_active=%d\r\n", 
-                    WiFi_Transparent_Mode_Ready(), Is_Positioning_Enabled(), navigation_active);
-            HAL_UART_Transmit(&huart3, (uint8_t *)status_msg, strlen(status_msg), 10);
-        }
-        
-        /* 如果定位启用，就发送位置 */
-        if (Is_Positioning_Enabled()) {
+        if (WiFi_Transparent_Mode_Ready()) {  /* 只有进入透传模式才发送POS */
             if (current_time - last_wifi_send >= WIFI_SEND_PERIOD_MS) {
                 last_wifi_send = current_time;
                 Position_t pos = Get_Current_Position();
-                
-                char wifi_msg[64];
-                snprintf(wifi_msg, sizeof(wifi_msg), "POS:%d,%d,%d\r\n",
-                       (int)pos.x, (int)pos.y, (int)pos.heading);
-                HAL_UART_Transmit(&huart3, (uint8_t *)"[WiFi] ", 7, 10);
-                HAL_UART_Transmit(&huart3, (uint8_t *)wifi_msg, strlen(wifi_msg), 10);
-                
                 WiFi_Send_Position(pos.x, pos.y, pos.heading);
             }
         }

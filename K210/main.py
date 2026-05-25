@@ -14,6 +14,10 @@ sensor.set_auto_whitebal(False)
 clock = time.clock()
 
 tag_families = image.TAG36H11   # 仅识别 TAG36H11
+DETECT_W = 160
+DETECT_H = 120
+DISPLAY_SCALE_X = 320.0 / DETECT_W
+DISPLAY_SCALE_Y = 240.0 / DETECT_H
 
 # 相机焦距参数（160x120分辨率）
 # 基于GC2145 + 2.8mm镜头标准参数
@@ -51,6 +55,45 @@ IMAGE_PIXEL_TO_CM = 0.08  # 初始估计，需要标定
 tag_last_send_time = {}  # tag_id -> last_send_timestamp
 tag_send_interval = 250  # 每个标签最小发送间隔 250ms
 tag_send_priority = []   # 标签发送优先级队列
+pose_filter = None       # (x, y, yaw)，用于平滑输出
+POSE_FILTER_ALPHA = 0.55
+
+def normalize_angle(deg):
+    while deg > 180:
+        deg -= 360
+    while deg < -180:
+        deg += 360
+    return deg
+
+def blend_angle(prev, new, alpha):
+    return normalize_angle(prev + normalize_angle(new - prev) * alpha)
+
+def smooth_pose(x, y, yaw):
+    global pose_filter
+    yaw = normalize_angle(yaw)
+    if pose_filter is None:
+        pose_filter = (x, y, yaw)
+    else:
+        px, py, pyaw = pose_filter
+        pose_filter = (
+            px + (x - px) * POSE_FILTER_ALPHA,
+            py + (y - py) * POSE_FILTER_ALPHA,
+            blend_angle(pyaw, yaw, POSE_FILTER_ALPHA)
+        )
+    return pose_filter
+
+def tag_center_to_robot_pose(tag_info):
+    world_x, world_y = tag_info['world']
+    tag = tag_info['tag']
+    dx_pixel = tag.cx() - (DETECT_W * 0.5)
+    dy_pixel = tag.cy() - (DETECT_H * 0.5)
+    offset_x = dx_pixel * IMAGE_PIXEL_TO_CM
+    offset_y = dy_pixel * IMAGE_PIXEL_TO_CM
+    robot_x = world_x - offset_x
+    robot_y = world_y - offset_y
+    yaw = normalize_angle(tag_info['rz'])
+    area = max(1, tag.w() * tag.h())
+    return robot_x, robot_y, yaw, area, offset_x, offset_y
 
 # 发送初始化消息
 time.sleep_ms(500)
@@ -64,7 +107,7 @@ while(True):
     current_time = time.ticks_ms()
     
     # 为检测创建缩小版本（满足<64K限制：160x120=19.2K）
-    img_detect = img.copy().resize(160, 120)
+    img_detect = img.copy().resize(DETECT_W, DETECT_H)
     # 使用标定的焦距参数进行位姿估计
     tags = img_detect.find_apriltags(families=tag_families, fx=f_x, fy=f_y, cx=c_x, cy=c_y)
     
@@ -89,13 +132,19 @@ while(True):
             rz = degrees(tag.z_rotation())
             
             # 绘制可视化
-            img.draw_rectangle(tag.rect(), color=(255, 0, 0))
-            img.draw_cross(tag.cx(), tag.cy(), color=(0, 255, 0))
+            draw_x = int(tag.x() * DISPLAY_SCALE_X)
+            draw_y = int(tag.y() * DISPLAY_SCALE_Y)
+            draw_w = int(tag.w() * DISPLAY_SCALE_X)
+            draw_h = int(tag.h() * DISPLAY_SCALE_Y)
+            draw_cx = int(tag.cx() * DISPLAY_SCALE_X)
+            draw_cy = int(tag.cy() * DISPLAY_SCALE_Y)
+            img.draw_rectangle((draw_x, draw_y, draw_w, draw_h), color=(255, 0, 0))
+            img.draw_cross(draw_cx, draw_cy, color=(0, 255, 0))
             
             # 在tag附近显示ID和距离
-            img.draw_string(tag.cx() - 10, tag.cy() - 20, "ID%d" % tag_id, color=(255, 255, 0), scale=2)
+            img.draw_string(draw_cx - 10, draw_cy - 20, "ID%d" % tag_id, color=(255, 255, 0), scale=2)
             dist = math.sqrt(tx*tx + ty*ty + tz*tz) * marker_size_cm
-            img.draw_string(tag.cx() - 10, tag.cy() + 10, "D:%.0f" % dist, color=(0, 255, 255), scale=1)
+            img.draw_string(draw_cx - 10, draw_cy + 10, "D:%.0f" % dist, color=(0, 255, 255), scale=1)
             
             # 打印调试信息
             print("Tag ID %d: Tx=%d Ty=%d Tz=%d, Rx=%d Ry=%d Rz=%d" %
@@ -110,53 +159,34 @@ while(True):
                 'rx': rx, 'ry': ry, 'rz': rz
             })
         
-        # 多标签三角定位：使用图像坐标法，基于标定参数
+        # 多标签定位：使用图像坐标法并按tag面积加权，面积越大通常观测越稳定
         if len(valid_tags) >= 2:
             positions = []
-            for tag_info in valid_tags[:2]:  # 使用前两个tag
-                world_x, world_y = tag_info['world']
-                tag = tag_info['tag']
-                
-                # tag在图像中的位置 (像素坐标，原始320x240)
-                cx = tag.cx()
-                cy = tag.cy()
-                
-                # 图像中心 (320x240的中心是160, 120)
-                center_x = 160.0
-                center_y = 120.0
-                
-                # TAG偏离中心的像素距离
-                dx_pixel = cx - center_x
-                dy_pixel = cy - center_y
-                
-                # 转换为实际距离偏移（使用标定参数）
-                offset_x = dx_pixel * IMAGE_PIXEL_TO_CM
-                offset_y = dy_pixel * IMAGE_PIXEL_TO_CM
-                
-                # 计算机器人的世界坐标
-                robot_x = world_x - offset_x  # 减号是因为TAG越靠右，机器人越靠左
-                robot_y = world_y - offset_y
-                
-                positions.append((robot_x, robot_y, tag_info['rz']))
-                print("  TAG%d: cx=%d cy=%d → offset=(%.1f,%.1f) → robot=(%.1f,%.1f)" % 
-                      (tag_info['id'], int(cx), int(cy), offset_x, offset_y, robot_x, robot_y))
+            for tag_info in valid_tags:
+                robot_x, robot_y, yaw, weight, offset_x, offset_y = tag_center_to_robot_pose(tag_info)
+                positions.append((robot_x, robot_y, yaw, weight))
+                print("  TAG%d: cx=%d cy=%d offset=(%.1f,%.1f) robot=(%.1f,%.1f) w=%d" %
+                      (tag_info['id'], int(tag_info['tag'].cx()), int(tag_info['tag'].cy()), offset_x, offset_y, robot_x, robot_y, weight))
             
-            # 取平均值
-            calc_world_x = sum(p[0] for p in positions) / len(positions)
-            calc_world_y = sum(p[1] for p in positions) / len(positions)
-            yaw = int(sum(p[2] for p in positions) / len(positions))
+            total_weight = sum(p[3] for p in positions)
+            calc_world_x = sum(p[0] * p[3] for p in positions) / total_weight
+            calc_world_y = sum(p[1] * p[3] for p in positions) / total_weight
+            yaw_sin = sum(math.sin(p[2] * math.pi / 180.0) * p[3] for p in positions)
+            yaw_cos = sum(math.cos(p[2] * math.pi / 180.0) * p[3] for p in positions)
+            yaw = normalize_angle((math.atan2(yaw_sin, yaw_cos) * 180.0) / math.pi)
+            calc_world_x, calc_world_y, yaw = smooth_pose(calc_world_x, calc_world_y, yaw)
             
             # 发送融合后的位置
             if time.ticks_diff(current_time, tag_last_send_time.get(-1, 0)) >= tag_send_interval:
                 msg = "$POS,-1,%d,%d,%d\r\n" % (
                     int(calc_world_x),
                     int(calc_world_y),
-                    yaw
+                    int(yaw)
                 )
                 serial.send(msg)
                 tag_last_send_time[-1] = current_time
-                print("Triangulated POS=(%d,%d) yaw=%d from %d tags [CALIBRATED]" % 
-                      (int(calc_world_x), int(calc_world_y), yaw, len(positions)))
+                print("Fused POS=(%d,%d) yaw=%d from %d tags [CALIBRATED]" %
+                      (int(calc_world_x), int(calc_world_y), int(yaw), len(positions)))
         elif len(valid_tags) == 1:
             # 只有1个tag时，使用图像坐标法单标签定位
             tag_info = valid_tags[0]
@@ -167,32 +197,20 @@ while(True):
                 world_x, world_y = tag_info['world']
                 tag = tag_info['tag']
                 
-                # tag在图像中的位置
-                cx = tag.cx()
-                cy = tag.cy()
-                
-                # 偏移计算
-                dx_pixel = cx - 160.0
-                dy_pixel = cy - 120.0
-                offset_x = dx_pixel * IMAGE_PIXEL_TO_CM
-                offset_y = dy_pixel * IMAGE_PIXEL_TO_CM
-                
-                # 机器人世界坐标
-                calc_world_x = world_x - offset_x
-                calc_world_y = world_y - offset_y
-                yaw = int(tag_info['rz'])
+                calc_world_x, calc_world_y, yaw, weight, offset_x, offset_y = tag_center_to_robot_pose(tag_info)
+                calc_world_x, calc_world_y, yaw = smooth_pose(calc_world_x, calc_world_y, yaw)
                 
                 msg = "$POS,%d,%d,%d,%d\r\n" % (
                     tag_id,
                     int(calc_world_x),
                     int(calc_world_y),
-                    yaw
+                    int(yaw)
                 )
                 serial.send(msg)
                 tag_last_send_time[tag_id] = current_time
                 print("Single TAG%d cx=%d cy=%d offset=(%.1f,%.1f) POS=(%d,%d) yaw=%d" % 
-                      (tag_id, int(cx), int(cy), offset_x, offset_y,
-                       int(calc_world_x), int(calc_world_y), yaw))
+                      (tag_id, int(tag.cx()), int(tag.cy()), offset_x, offset_y,
+                       int(calc_world_x), int(calc_world_y), int(yaw)))
 
     else:
         img_display.draw_string(4, 4, "Searching...", color=(255, 255, 255), scale=2)

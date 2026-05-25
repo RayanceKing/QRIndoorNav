@@ -49,6 +49,21 @@ void Localization_Init(void);
 void Update_Position_From_QR(const QR_Data_t *qr);
 
 /**
+ * @brief 使用PnP从角点估计相机/机器人位姿（若可用）
+ */
+bool Update_Pose_From_QR_PnP(const QR_Data_t *qr);
+
+/**
+ * @brief 配置相机内参（像素域）
+ */
+void Set_Camera_Intrinsics(float fx, float fy, float cx, float cy);
+
+/**
+ * @brief 设置二维码实际边长（厘米）
+ */
+void Set_Marker_Size(float size_cm);
+
+/**
  * @brief 获取当前机器人位姿
  */
 RobotPose_t* Get_Robot_Pose(void);

@@ -20,6 +20,8 @@ targets:
         - .
       libList: []
     excludeList: []
+    settings:
+      debugger: cortex-debug
     toolchain: GCC
     toolchainConfigMap:
       GCC:

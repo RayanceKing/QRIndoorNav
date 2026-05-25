@@ -32,6 +32,25 @@ static const uint32_t pwm_channels[4] = {
     TIM_CHANNEL_4,  /* Motor D */
 };
 
+#define MOTOR_DEADBAND_PWM  18
+#define MOTOR_RAMP_STEP_PWM 80
+
+static int16_t motor_last_cmd[4] = {0, 0, 0, 0};
+
+static int16_t Ramp_To_Target(int16_t current, int16_t target)
+{
+    int16_t delta = target - current;
+    if (delta > MOTOR_RAMP_STEP_PWM) return current + MOTOR_RAMP_STEP_PWM;
+    if (delta < -MOTOR_RAMP_STEP_PWM) return current - MOTOR_RAMP_STEP_PWM;
+    return target;
+}
+
+static int16_t Apply_Deadband(int16_t speed)
+{
+    if (speed > -MOTOR_DEADBAND_PWM && speed < MOTOR_DEADBAND_PWM) return 0;
+    return speed;
+}
+
 /**
  * @brief 电机初始化
  */
@@ -107,6 +126,7 @@ void Motor_SetSpeed(uint8_t motor_id, int16_t speed)
 void Motor_Stop_All(void)
 {
     for (uint8_t i = 0; i < 4; i++) {
+        motor_last_cmd[i] = 0;
         Motor_SetSpeed(i, 0);
     }
 }
@@ -135,16 +155,34 @@ void Mecanum_Move(float vx, float vy, float omega)
         vC = vC * PWM_MAX / max_speed;
         vD = vD * PWM_MAX / max_speed;
     }
+
+    int16_t target[4] = {
+        Apply_Deadband((int16_t)vA),
+        Apply_Deadband((int16_t)vB),
+        Apply_Deadband((int16_t)vC),
+        Apply_Deadband((int16_t)vD),
+    };
+
+    int16_t cmd[4];
+    for (uint8_t i = 0; i < 4; i++) {
+        cmd[i] = Ramp_To_Target(motor_last_cmd[i], target[i]);
+        motor_last_cmd[i] = cmd[i];
+    }
     
-    /* DEBUG: 打印电机速度命令 */
-    char motor_dbg[128];
-    snprintf(motor_dbg, sizeof(motor_dbg),
-             "MOTORS: A=%d B=%d C=%d D=%d\r\n",
-             (int16_t)vA, (int16_t)vB, (int16_t)vC, (int16_t)vD);
-    HAL_UART_Transmit(&huart3, (uint8_t *)motor_dbg, strlen(motor_dbg), 5);
+    /* DEBUG: 限频打印电机速度命令，避免控制环被串口阻塞 */
+    static uint32_t last_dbg_tick = 0;
+    uint32_t now = HAL_GetTick();
+    if (now - last_dbg_tick >= 200U) {
+        char motor_dbg[128];
+        snprintf(motor_dbg, sizeof(motor_dbg),
+                 "MOTORS: A=%d B=%d C=%d D=%d\r\n",
+                 cmd[MOTOR_A], cmd[MOTOR_B], cmd[MOTOR_C], cmd[MOTOR_D]);
+        HAL_UART_Transmit(&huart3, (uint8_t *)motor_dbg, strlen(motor_dbg), 5);
+        last_dbg_tick = now;
+    }
     
-    Motor_SetSpeed(MOTOR_A, (int16_t)vA);
-    Motor_SetSpeed(MOTOR_B, (int16_t)vB);
-    Motor_SetSpeed(MOTOR_C, (int16_t)vC);
-    Motor_SetSpeed(MOTOR_D, (int16_t)vD);
+    Motor_SetSpeed(MOTOR_A, cmd[MOTOR_A]);
+    Motor_SetSpeed(MOTOR_B, cmd[MOTOR_B]);
+    Motor_SetSpeed(MOTOR_C, cmd[MOTOR_C]);
+    Motor_SetSpeed(MOTOR_D, cmd[MOTOR_D]);
 }

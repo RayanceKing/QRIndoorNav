@@ -13,13 +13,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* AprilTag位置数据结构 */
+/* 二维码数据结构（与 qr_comm.c 实现匹配） */
 typedef struct {
-    int8_t id;             /* AprilTag ID (0-3) 或 -1 表示融合位置 */
-    int16_t x;             /* 世界坐标 X (cm) */
-    int16_t y;             /* 世界坐标 Y (cm) */
-    int16_t yaw;           /* 偶长角 (度) */
-    bool valid;            /* 数据有效性标志 */
+    char id[16];           /* 二维码标识字符串 */
+    float world_x;         /* 世界坐标 X（cm 或 与 K210 约定的单位） */
+    float world_y;         /* 世界坐标 Y */
+    float heading_deg;     /* K210融合后的航向角（度），仅 pose_valid=true 时有效 */
+    uint16_t corner_x[4];  /* 四个角点的像素 x 坐标 */
+    uint16_t corner_y[4];  /* 四个角点的像素 y 坐标 */
+    bool corners_valid;    /* 是否包含有效角点数据 */
+    bool pose_valid;       /* 是否为 $POS 直接位姿包 */
     uint32_t timestamp;    /* 接收时间戳 */
 } QR_Data_t;
 
